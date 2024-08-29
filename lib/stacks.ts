@@ -44,7 +44,8 @@ export class ConsumerConnectorStack extends cdk.Stack {
       service: cdk.aws_ec2.InterfaceVpcEndpointAwsService.APIGATEWAY,
       securityGroups: [securityGroup],
       // https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-private-api-test-invoke-url.html#w75aac15c20c17c15c15
-      privateDnsEnabled: true,
+      // We use the VPC endpoint's DNS name to access the API Gateway
+      privateDnsEnabled: false,
     });
 
     this.vpcPeeringRole = new cdk.aws_iam.Role(
