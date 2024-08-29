@@ -2,10 +2,6 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import path = require("path");
 
-const ACCEPTER_CIDR = "10.0.0.0/16";
-const REQUESTER_CIDR = "10.1.0.0/16";
-const PROVIDER_CIDR = "10.2.0.0/16";
-
 export class ConsumerConnectorStack extends cdk.Stack {
   public readonly vpc: cdk.aws_ec2.Vpc;
   public readonly vpcEndpoint: cdk.aws_ec2.InterfaceVpcEndpoint;
@@ -14,12 +10,15 @@ export class ConsumerConnectorStack extends cdk.Stack {
   constructor(
     scope: Construct,
     id: string,
-    props: cdk.StackProps & { externalVpc: cdk.aws_ec2.IVpc },
+    props: cdk.StackProps & {
+      providerCidr: string;
+      consumerCidr: string;
+    },
   ) {
     super(scope, id, props);
 
     this.vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
-      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(ACCEPTER_CIDR),
+      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(props.providerCidr),
       enableDnsHostnames: true,
       enableDnsSupport: true,
       subnetConfiguration: [
@@ -35,7 +34,7 @@ export class ConsumerConnectorStack extends cdk.Stack {
       allowAllOutbound: true,
     });
     securityGroup.addIngressRule(
-      cdk.aws_ec2.Peer.ipv4(REQUESTER_CIDR),
+      cdk.aws_ec2.Peer.ipv4(props.consumerCidr),
       cdk.aws_ec2.Port.tcp(443),
       "Allow HTTPS traffic from anywhere",
     );
@@ -72,11 +71,15 @@ export class ConsumerConnectorStack extends cdk.Stack {
 export class ProviderConnectorStack extends cdk.Stack {
   public readonly vpc: cdk.aws_ec2.IVpc;
 
-  constructor(scope: Construct, id: string, props: cdk.StackProps) {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: cdk.StackProps & { cidr: string },
+  ) {
     super(scope, id, props);
 
     this.vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
-      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(PROVIDER_CIDR),
+      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(props.cidr),
       enableDnsHostnames: true,
       enableDnsSupport: true,
       subnetConfiguration: [
@@ -103,12 +106,13 @@ export class ConsumerStack extends cdk.Stack {
         vpc: cdk.aws_ec2.Vpc;
         role: cdk.aws_iam.IRole;
       };
+      requesterCidr: string;
     },
   ) {
     super(scope, id, props);
 
     const vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
-      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(REQUESTER_CIDR),
+      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(props.requesterCidr),
       enableDnsHostnames: true,
       enableDnsSupport: true,
       subnetConfiguration: [
