@@ -10,11 +10,12 @@ import {
 
 const REGION_A = "us-east-2";
 const REGION_B = "eu-west-1";
-const VERSION = "2";
+const VERSION = "3";
 
-const ACCEPTER_CIDR = "10.0.0.0/16";
-const REQUESTER_CIDR = "10.1.0.0/16";
-const PROVIDER_CIDR = "10.2.0.0/16";
+const CONSUMER_ACCEPTER_CIDR = "10.0.0.0/16";
+const CONSUMER_REQUESTER_CIDR = "10.1.0.0/16";
+// It doesn't matter if the provider CIDR is the same as the consumer accepter CIDR
+const PROVIDER_CIDR = "10.0.0.0/16";
 
 const app = new cdk.App();
 
@@ -32,8 +33,8 @@ const consumerConnectorStack = new ConsumerConnectorStack(
   `${ConsumerConnectorStack.name}-${VERSION}`,
   {
     env: { region: REGION_A },
-    consumerCidr: REQUESTER_CIDR,
-    providerCidr: ACCEPTER_CIDR,
+    consumerCidr: CONSUMER_REQUESTER_CIDR,
+    providerCidr: CONSUMER_ACCEPTER_CIDR,
   },
 );
 
@@ -59,6 +60,6 @@ const consumerStack = new ConsumerStack(
       vpc: consumerConnectorStack.vpc,
       role: consumerConnectorStack.vpcPeeringRole,
     },
-    requesterCidr: REQUESTER_CIDR,
+    requesterCidr: CONSUMER_REQUESTER_CIDR,
   },
 );
