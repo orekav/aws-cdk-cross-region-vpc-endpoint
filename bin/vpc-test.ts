@@ -33,8 +33,8 @@ const consumerConnectorStack = new ConsumerConnectorStack(
   `${ConsumerConnectorStack.name}-${VERSION}`,
   {
     env: { region: REGION_A },
-    consumerCidr: CONSUMER_REQUESTER_CIDR,
-    providerCidr: CONSUMER_ACCEPTER_CIDR,
+    requesterCidr: CONSUMER_REQUESTER_CIDR,
+    accepterCidr: CONSUMER_ACCEPTER_CIDR,
   },
 );
 

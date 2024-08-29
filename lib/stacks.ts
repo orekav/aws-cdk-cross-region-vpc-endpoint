@@ -11,14 +11,14 @@ export class ConsumerConnectorStack extends cdk.Stack {
     scope: Construct,
     id: string,
     props: cdk.StackProps & {
-      providerCidr: string;
-      consumerCidr: string;
+      accepterCidr: string;
+      requesterCidr: string;
     },
   ) {
     super(scope, id, props);
 
     this.vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
-      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(props.providerCidr),
+      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(props.accepterCidr),
       enableDnsHostnames: true,
       enableDnsSupport: true,
       subnetConfiguration: [
@@ -34,7 +34,7 @@ export class ConsumerConnectorStack extends cdk.Stack {
       allowAllOutbound: true,
     });
     securityGroup.addIngressRule(
-      cdk.aws_ec2.Peer.ipv4(props.consumerCidr),
+      cdk.aws_ec2.Peer.ipv4(props.requesterCidr),
       cdk.aws_ec2.Port.tcp(443),
       "Allow HTTPS traffic from anywhere",
     );
