@@ -2,73 +2,120 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import path = require("path");
 
-export class AccepterStack extends cdk.Stack {
+const ACCEPTER_CIDR = "10.0.0.0/16";
+const REQUESTER_CIDR = "10.1.0.0/16";
+const PROVIDER_CIDR = "10.2.0.0/16";
+
+export class ConsumerConnectorStack extends cdk.Stack {
   public readonly vpc: cdk.aws_ec2.Vpc;
   public readonly vpcEndpoint: cdk.aws_ec2.InterfaceVpcEndpoint;
   public readonly vpcPeeringRole: cdk.aws_iam.Role;
 
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(
+    scope: Construct,
+    id: string,
+    props: cdk.StackProps & { externalVpc: cdk.aws_ec2.IVpc },
+  ) {
     super(scope, id, props);
 
     this.vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
-      ipAddresses: cdk.aws_ec2.IpAddresses.cidr("10.0.0.0/16"),
+      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(ACCEPTER_CIDR),
+      enableDnsHostnames: true,
+      enableDnsSupport: true,
+      subnetConfiguration: [
+        {
+          name: "Isolated",
+          subnetType: cdk.aws_ec2.SubnetType.PRIVATE_ISOLATED,
+        },
+      ],
     });
 
+    const securityGroup = new cdk.aws_ec2.SecurityGroup(this, "SecurityGroup", {
+      vpc: this.vpc,
+      allowAllOutbound: true,
+    });
+    securityGroup.addIngressRule(
+      cdk.aws_ec2.Peer.ipv4(REQUESTER_CIDR),
+      cdk.aws_ec2.Port.tcp(443),
+      "Allow HTTPS traffic from anywhere",
+    );
+
     this.vpcEndpoint = this.vpc.addInterfaceEndpoint("VpcEndpoint", {
-      privateDnsEnabled: true,
       service: cdk.aws_ec2.InterfaceVpcEndpointAwsService.APIGATEWAY,
+      securityGroups: [securityGroup],
+      // https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-private-api-test-invoke-url.html#w75aac15c20c17c15c15
+      privateDnsEnabled: true,
     });
 
     this.vpcPeeringRole = new cdk.aws_iam.Role(
       this,
       "AcceptVpcPeeringFromRequesterAccountRole",
       {
-        roleName: "AcceptVpcPeeringFromSecondaryAccountRole",
-        assumedBy: new cdk.aws_iam.AccountRootPrincipal(),
-      }
+        assumedBy: new cdk.aws_iam.CompositePrincipal(
+          new cdk.aws_iam.AccountRootPrincipal(),
+        ),
+      },
     );
     this.vpcPeeringRole.addToPolicy(
       new cdk.aws_iam.PolicyStatement({
-        actions: ["ec2:AcceptVpcPeeringConnection"],
+        actions: [
+          "ec2:AcceptVpcPeeringConnection",
+          "ec2:ModifyVpcPeeringConnectionOptions",
+        ],
         resources: ["*"],
-      })
+      }),
     );
+  }
+}
 
-    const lambda = new cdk.aws_lambda_nodejs.NodejsFunction(this, "Lambda", {
-      entry: path.resolve(__dirname, "./lambda/index.mjs"),
-      architecture: cdk.aws_lambda.Architecture.ARM_64,
-      runtime: cdk.aws_lambda.Runtime.NODEJS_20_X,
-      insightsVersion: cdk.aws_lambda.LambdaInsightsVersion.VERSION_1_0_317_0,
-      timeout: cdk.Duration.seconds(30),
-      memorySize: 1024,
-      environment: {
-        API_URL: "https://api.example.com",
-      },
-      vpc: this.vpc,
-      vpcSubnets: {
-        subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
-      },
+export class ProviderConnectorStack extends cdk.Stack {
+  public readonly vpc: cdk.aws_ec2.IVpc;
+
+  constructor(scope: Construct, id: string, props: cdk.StackProps) {
+    super(scope, id, props);
+
+    this.vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
+      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(PROVIDER_CIDR),
+      enableDnsHostnames: true,
+      enableDnsSupport: true,
+      subnetConfiguration: [
+        {
+          name: "Isolated",
+          subnetType: cdk.aws_ec2.SubnetType.PRIVATE_ISOLATED,
+        },
+      ],
     });
   }
 }
 
-export class RequesterStack extends cdk.Stack {
+export class ConsumerStack extends cdk.Stack {
   constructor(
     scope: Construct,
     id: string,
     props: cdk.StackProps & {
+      // Destination REST API
+      restApi: cdk.aws_apigateway.RestApi;
+      // https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-private-api-test-invoke-url.html#apigateway-private-api-route53-alias
+      vpcEndpoint: cdk.aws_ec2.InterfaceVpcEndpoint;
+      // for Cross-region VPC peering
       peer: {
         vpc: cdk.aws_ec2.Vpc;
-        region: string;
         role: cdk.aws_iam.IRole;
       };
-      restApi: cdk.aws_apigateway.RestApi;
-    }
+    },
   ) {
     super(scope, id, props);
 
     const vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
-      ipAddresses: cdk.aws_ec2.IpAddresses.cidr("10.1.0.0/16"),
+      ipAddresses: cdk.aws_ec2.IpAddresses.cidr(REQUESTER_CIDR),
+      enableDnsHostnames: true,
+      enableDnsSupport: true,
+      subnetConfiguration: [
+        {
+          name: "Isolated",
+          subnetType: cdk.aws_ec2.SubnetType.PRIVATE_ISOLATED,
+        },
+      ],
     });
 
     const peeringConnection = new cdk.aws_ec2.CfnVPCPeeringConnection(
@@ -77,26 +124,42 @@ export class RequesterStack extends cdk.Stack {
       {
         vpcId: vpc.vpcId,
         peerVpcId: props.peer.vpc.vpcId,
-        peerRegion: props.peer.region,
+        peerRegion: props.peer.vpc.stack.region,
         peerRoleArn: props.peer.role.roleArn,
-      }
+      },
     );
 
-    vpc.privateSubnets.forEach(({ routeTable: { routeTableId } }, index) => {
+    // Allows traffic from the isolated subnets to the peer VPC
+    vpc.isolatedSubnets.forEach(({ routeTable: { routeTableId } }, index) => {
       const route = new cdk.aws_ec2.CfnRoute(
         this,
         "IsolatedSubnetPeeringConnectionRoute" + index,
         {
-          destinationCidrBlock: props.peer.vpc.vpcCidrBlock,
           routeTableId,
+          destinationCidrBlock: props.peer.vpc.vpcCidrBlock,
           vpcPeeringConnectionId: peeringConnection.ref,
-        }
+        },
       );
       route.addDependency(peeringConnection);
     });
 
+    // NOTE - Traffic from the peer VPC to the isolated subnets has to be MANUALLY allowed in the peer VPC
+    // props.peer.vpc.isolatedSubnets.forEach(({ routeTable: { routeTableId } }, index) => {
+    //   const route = new cdk.aws_ec2.CfnRoute(
+    //     this,
+    //     "ExternalIsolatedSubnetPeeringConnectionRoute" + index,
+    //     {
+    //       routeTableId,
+    //       destinationCidrBlock: vpc.vpcCidrBlock,
+    //       vpcPeeringConnectionId: peeringConnection.ref,
+    //     }
+    //   );
+    //   route.addDependency(peeringConnection);
+    // })
+
     const lambda = new cdk.aws_lambda_nodejs.NodejsFunction(this, "Lambda", {
-      entry: path.resolve(__dirname, "./lambda/index.mjs"),
+      code: cdk.aws_lambda.Code.fromAsset(path.resolve(__dirname, "./lambda")),
+      handler: "index.handler",
       architecture: cdk.aws_lambda.Architecture.ARM_64,
       runtime: cdk.aws_lambda.Runtime.NODEJS_20_X,
       insightsVersion: cdk.aws_lambda.LambdaInsightsVersion.VERSION_1_0_317_0,
@@ -104,10 +167,11 @@ export class RequesterStack extends cdk.Stack {
       memorySize: 1024,
       environment: {
         API_URL: props.restApi.url,
+        VPC_ENDPOINT_ID: props.vpcEndpoint.vpcEndpointId,
       },
       vpc: vpc,
       vpcSubnets: {
-        subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
+        subnetType: cdk.aws_ec2.SubnetType.PRIVATE_ISOLATED,
       },
     });
 
@@ -115,7 +179,7 @@ export class RequesterStack extends cdk.Stack {
       new cdk.aws_iam.PolicyStatement({
         actions: ["execute-api:Invoke"],
         resources: [props.restApi.arnForExecuteApi()],
-      })
+      }),
     );
   }
 }
@@ -126,34 +190,21 @@ export class ProviderStack extends cdk.Stack {
   constructor(
     scope: Construct,
     id: string,
-    props: cdk.StackProps & { vpcEndpoint: cdk.aws_ec2.InterfaceVpcEndpoint }
+    props: cdk.StackProps & {
+      vpc: cdk.aws_ec2.IVpc;
+      externalVpcEndpoints: cdk.aws_ec2.InterfaceVpcEndpoint[];
+    },
   ) {
     super(scope, id, props);
 
-    const vpc = new cdk.aws_ec2.Vpc(this, "Vpc", {
-      ipAddresses: cdk.aws_ec2.IpAddresses.cidr("10.0.0.0/24"),
-      maxAzs: 3,
-      subnetConfiguration: [
-        {
-          cidrMask: 27,
-          name: "private",
-          subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
-        },
-        {
-          cidrMask: 27,
-          name: "public",
-          subnetType: cdk.aws_ec2.SubnetType.PUBLIC,
-        },
-      ],
-    });
-
-    const vpcEndpoint = vpc.addInterfaceEndpoint("VpcEndpoint", {
+    const vpcEndpoint = props.vpc.addInterfaceEndpoint("VpcEndpoint", {
       privateDnsEnabled: true,
       service: cdk.aws_ec2.InterfaceVpcEndpointAwsService.APIGATEWAY,
     });
 
     const apiResourcePolicy = new cdk.aws_iam.PolicyDocument({
       statements: [
+        // Prevents access to the API Gateway from any VPC endpoint excepted the specified ones
         new cdk.aws_iam.PolicyStatement({
           effect: cdk.aws_iam.Effect.DENY,
           principals: [new cdk.aws_iam.StarPrincipal()],
@@ -163,11 +214,14 @@ export class ProviderStack extends cdk.Stack {
             StringNotEquals: {
               "aws:sourceVpce": [
                 vpcEndpoint.vpcEndpointId,
-                props.vpcEndpoint.vpcEndpointId,
+                ...props.externalVpcEndpoints.map(
+                  ({ vpcEndpointId }) => vpcEndpointId,
+                ),
               ],
             },
           },
         }),
+        // Allows access to the API Gateway from the specified VPC endpoints
         new cdk.aws_iam.PolicyStatement({
           effect: cdk.aws_iam.Effect.ALLOW,
           principals: [new cdk.aws_iam.StarPrincipal()],
@@ -177,7 +231,9 @@ export class ProviderStack extends cdk.Stack {
             StringEquals: {
               "aws:sourceVpce": [
                 vpcEndpoint.vpcEndpointId,
-                props.vpcEndpoint.vpcEndpointId,
+                ...props.externalVpcEndpoints.map(
+                  ({ vpcEndpointId }) => vpcEndpointId,
+                ),
               ],
             },
           },
@@ -188,7 +244,7 @@ export class ProviderStack extends cdk.Stack {
     this.restApi = new cdk.aws_apigateway.RestApi(this, "RestApi", {
       endpointConfiguration: {
         types: [cdk.aws_apigateway.EndpointType.PRIVATE],
-        vpcEndpoints: [vpcEndpoint, props.vpcEndpoint],
+        vpcEndpoints: [vpcEndpoint, ...props.externalVpcEndpoints],
       },
       policy: apiResourcePolicy,
     });
@@ -196,8 +252,8 @@ export class ProviderStack extends cdk.Stack {
     this.restApi.root.addMethod(
       "GET",
       new cdk.aws_apigateway.HttpIntegration(
-        "https://jsonplaceholder.typicode.com/todos/1"
-      )
+        "https://jsonplaceholder.typicode.com/todos/1",
+      ),
     );
   }
 }
